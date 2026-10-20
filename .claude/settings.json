@@ -1,0 +1,75 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Read(/var/log/**)",
+      "Bash(\"$CLAUDE_PROJECT_DIR\"/bin/status.sh)",
+      "Bash(bin/status.sh)",
+      "Bash(./bin/status.sh)",
+      "Bash(systemctl status *)",
+      "Bash(systemctl is-active *)",
+      "Bash(systemctl is-enabled *)",
+      "Bash(systemctl list-units *)",
+      "Bash(systemctl list-timers *)",
+      "Bash(systemctl --user status *)",
+      "Bash(journalctl *)",
+      "Bash(docker ps *)",
+      "Bash(docker logs *)",
+      "Bash(docker inspect *)",
+      "Bash(docker stats --no-stream *)",
+      "Bash(tail *)",
+      "Bash(head *)",
+      "Bash(cat *)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(df *)",
+      "Bash(free *)",
+      "Bash(uptime *)",
+      "Bash(ss -tlnp *)",
+      "Bash(ps *)",
+      "Bash(crontab -l)"
+    ],
+    "ask": [
+      "Bash(systemctl restart *)",
+      "Bash(systemctl stop *)",
+      "Bash(systemctl --user restart *)",
+      "Bash(systemctl --user stop *)",
+      "Bash(docker restart *)",
+      "Bash(docker stop *)",
+      "Bash(crontab *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(sudo *)",
+      "Bash(systemctl disable *)",
+      "Read(~/.config/cc-resident/**)",
+      "Read(~/.claude/.credentials.json)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/status.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/recent-messages.py --hours 24"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/recent-messages.py --new"
+          }
+        ]
+      }
+    ]
+  }
+}

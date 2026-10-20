@@ -1,0 +1,7 @@
+[Unit]
+Description=cc-resident: daily fresh session (memory files carry over)
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/touch @DIR@/.state/agent-planned-restart
+ExecStart=/usr/bin/systemctl --user restart cc-resident.service

@@ -1,0 +1,20 @@
+[Unit]
+Description=cc-resident: always-on Claude Code agent (Telegram channel + Remote Control in tmux)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# claude is an interactive TUI and needs a terminal, so systemd manages a
+# detached tmux session that provides one. Attach with: tmux attach -t <TMUX_SESSION>
+Type=forking
+WorkingDirectory=@DIR@
+ExecStartPre=/bin/sleep 20
+ExecStart=@DIR@/bin/start.sh
+ExecStartPost=@DIR@/bin/power-notify.sh agent-start
+ExecStop=/bin/bash -c '. @DIR@/bin/_env.sh; tmux kill-session -t "$TMUX_SESSION"'
+ExecStopPost=@DIR@/bin/power-notify.sh agent-stop
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

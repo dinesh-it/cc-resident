@@ -1,0 +1,15 @@
+[Unit]
+Description=cc-resident: Telegram message when this machine boots and before it shuts down
+
+[Service]
+# Stays "active" after boot; ExecStop runs during shutdown while the network is
+# still up (user services stop before NetworkManager)
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@DIR@/bin/power-notify.sh up
+ExecStop=@DIR@/bin/power-notify.sh down
+TimeoutStartSec=600
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

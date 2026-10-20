@@ -1,0 +1,8 @@
+[Unit]
+Description=cc-resident: restart the agent daily
+
+[Timer]
+OnCalendar=*-*-* @DAILY_RESTART@:00
+
+[Install]
+WantedBy=timers.target

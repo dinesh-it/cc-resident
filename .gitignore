@@ -1,0 +1,7 @@
+# Machine-specific and private: never commit
+config.env
+local/
+.claude/settings.local.json
+.state/
+logs/
+__pycache__/

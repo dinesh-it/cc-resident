@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Send a Telegram message to you and log it for the agent's context.
+
+  notify "Backup finished"                 send + log (source = calling script)
+  notify --source backup.sh "text"         set the source name yourself
+  notify --log-only "text"                 just log (your script already sent it)
+  echo "long text" | notify -              read the message from stdin
+
+Uses the bot token in $TELEGRAM_STATE_DIR/.env and sends to the first id in
+TELEGRAM_ALLOW_IDS (config.env).
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.parse
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, 'lib'))
+from notify_log import log_sent, caller_name  # noqa: E402
+
+
+def load_config():
+    cfg = {}
+    try:
+        for line in open(os.path.join(ROOT, 'config.env')):
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                k, v = line.split('=', 1)
+                cfg[k] = os.path.expandvars(v.strip().strip('"'))
+    except OSError:
+        pass
+    for k in ('TELEGRAM_STATE_DIR', 'TELEGRAM_ALLOW_IDS', 'NOTIFY_LOG'):
+        if os.environ.get(k):
+            cfg[k] = os.environ[k]
+    return cfg
+
+
+def bot_token(state_dir):
+    if os.environ.get('TELEGRAM_BOT_TOKEN'):
+        return os.environ['TELEGRAM_BOT_TOKEN']
+    try:
+        for line in open(os.path.join(state_dir, '.env')):
+            if line.startswith('TELEGRAM_BOT_TOKEN='):
+                return line.split('=', 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+def main():
+    p = argparse.ArgumentParser(description='Send a Telegram notification and log it for cc-resident')
+    p.add_argument('text', help='message text, or - to read stdin')
+    p.add_argument('--source', help='who sent it (default: calling script)')
+    p.add_argument('--log-only', action='store_true', help="don't send, only log")
+    args = p.parse_args()
+
+    text = sys.stdin.read().strip() if args.text == '-' else args.text
+    cfg = load_config()
+    if cfg.get('NOTIFY_LOG'):
+        os.environ['NOTIFY_LOG'] = cfg['NOTIFY_LOG']
+    source = args.source or caller_name()
+
+    if not args.log_only:
+        state_dir = os.path.expanduser(cfg.get('TELEGRAM_STATE_DIR', '~/.config/cc-resident/telegram'))
+        token = bot_token(state_dir)
+        ids = cfg.get('TELEGRAM_ALLOW_IDS', '').split()
+        if not token or not ids:
+            sys.exit('notify: missing bot token or TELEGRAM_ALLOW_IDS (see config.env)')
+        data = urllib.parse.urlencode({'chat_id': ids[0], 'text': text[:4096]}).encode()
+        try:
+            with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/sendMessage', data, timeout=20) as r:
+                if not json.load(r).get('ok'):
+                    sys.exit('notify: Telegram rejected the message')
+        except Exception as e:
+            sys.exit(f'notify: send failed - {e}')
+
+    log_sent(text, source=source)
+
+
+if __name__ == '__main__':
+    main()
