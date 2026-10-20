@@ -42,7 +42,7 @@ billing: it runs on your Claude Pro or Max login, like Claude Code on your lapto
 | **Knows what your scripts sent you** | Your cron jobs and services send alerts to the same chat with `bin/notify`. Hooks attach the last 24 h at session start, and anything new with each of your messages. Reply "what is this?" to an alert and it knows which one you mean. |
 | **Machine awareness** | Every session starts with a status snapshot (`bin/status.sh`): your watched services, containers, disk, memory, and any custom lines you add. |
 | **Boot and shutdown messages** | Telegram messages before a shutdown or reboot, when the machine is back (saying whether the last stop was clean or a power cut), and if the agent itself stops unexpectedly. |
-| **Guard rails** | Read-only checks run without asking; restarts, crontab and unit edits ask first; `sudo`, `rm -rf` and reading the secret files are blocked. You add machine-specific rules, such as "never touch the inverter scripts without my OK". |
+| **Guard rails** | Read-only checks run without asking; restarts, crontab and unit edits ask first; `sudo`, `rm -rf` and reading the secret files are blocked. You add machine-specific rules, such as "never touch the inverter scripts without my OK". Set `PERMISSION_MODE=auto` to let Claude Code's safety classifier approve routine actions instead of asking you each time; your ask and deny rules still apply. |
 | **Bot isolation** | The bot token lives in a private folder only the agent session is pointed at, so other Claude Code sessions on the same machine can't grab the bot. |
 
 ## Requirements
