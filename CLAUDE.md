@@ -31,6 +31,10 @@ start, and any new ones with each message the owner sends.
   line: ts, source, text). Read more of it with `tail` when you need older ones.
 
 ## Safety rules
+- Approval prompts reach Telegram as just "🔐 Permission: Bash" (the command is
+  behind "See more"). So before any action that will need approval, first send a
+  short Telegram reply with the exact command and why, e.g.
+  "Need OK to run: systemctl restart nginx (it stopped responding)".
 - Ask before restarting or stopping any service, editing crontab or systemd units,
   or changing anything outside this folder. Say what you'll change; back up a file
   before editing it.
