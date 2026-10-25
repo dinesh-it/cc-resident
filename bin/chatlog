@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Search the local chat database: owner messages, agent replies, script notifications.
+
+Usage:
+  bin/chatlog [TEXT ...] [--since DATE] [--until DATE] [--who WHO] [-n N] [-C N]
+  bin/chatlog --sync                    # only pull in new messages
+  bin/chatlog --import result.json      # add a Telegram Desktop chat export
+  bin/chatlog --stats                   # counts per month and kind
+
+  TEXT     words to search for (all must appear, case-insensitive; prefix* works)
+  --since  start date/time, local, e.g. 2026-10-20 or "2026-10-23 18:00"
+  --until  end date/time (a bare date includes that whole day)
+  --who    owner | agent | script | bot (bot = bot messages from an export)
+  -n       max results, newest shown last (default 20)
+  -C       also show N messages before/after each hit, for context
+
+Database: logs/chat.db (SQLite, FTS5). Every run first syncs from Claude Code
+session transcripts (owner messages + agent Telegram replies) and from the
+notification log (NOTIFY_LOG in config.env), so the DB outlives transcript cleanup.
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB = os.path.join(HERE, "logs", "chat.db")
+OLD_ARCHIVE = os.path.join(HERE, "logs", "chat.jsonl")
+TRANSCRIPTS = os.path.expanduser("~/.claude/projects/-home-dinesh-agent/*.jsonl")
+CHANNEL_RE = re.compile(
+    r'<channel source="plugin:telegram:telegram"([^>]*)>\n?(.*?)\n?</channel>', re.S)
+ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
+
+
+def utc(dt):
+    """Normalise to a sortable UTC string."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def from_iso(s):
+    """ISO string -> aware datetime; naive strings are local time."""
+    d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    return d if d.tzinfo else d.astimezone()
+
+
+def connect():
+    os.makedirs(os.path.dirname(DB), exist_ok=True)
+    db = sqlite3.connect(DB)
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,   -- u:<tg id>, a:<tool_use id>, n:<hash>, x:<export id>
+            ts TEXT NOT NULL,      -- UTC, YYYY-MM-DDTHH:MM:SSZ
+            who TEXT NOT NULL,     -- owner | agent | script | bot
+            source TEXT,           -- script name, or telegram / telegram-export
+            text TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS messages_ts ON messages(ts);
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            text, content='messages', content_rowid='rowid');
+        CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, text) VALUES (new.rowid, new.text);
+        END;
+    """)
+    return db
+
+
+def add(db, rows):
+    count = "SELECT count(*) FROM messages"
+    before = db.execute(count).fetchone()[0]
+    db.executemany("INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?)", rows)
+    db.commit()
+    return db.execute(count).fetchone()[0] - before
+
+
+def strings(obj):
+    """Yield every string inside a parsed JSON record."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from strings(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from strings(v)
+
+
+def from_transcript(path):
+    for line in open(path, errors="replace"):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        # api-request records repeat whole prompts; skip them
+        if rec.get("type", "").startswith("api-request"):
+            continue
+        if rec.get("type") == "assistant":
+            for part in rec.get("message", {}).get("content", []):
+                if (isinstance(part, dict) and part.get("type") == "tool_use"
+                        and part.get("name", "").endswith("telegram__reply")):
+                    yield ("a:" + part["id"], utc(from_iso(rec["timestamp"])),
+                           "agent", "telegram", part["input"].get("text", ""))
+            continue
+        for s in strings(rec):
+            for m in CHANNEL_RE.finditer(s):
+                attrs = dict(ATTR_RE.findall(m.group(1)))
+                if "message_id" not in attrs or not attrs.get("ts"):
+                    continue
+                text = m.group(2).strip()
+                if attrs.get("attachment_kind"):
+                    text = f"[{attrs['attachment_kind']}] {text}"
+                yield ("u:" + attrs["message_id"], utc(from_iso(attrs["ts"])),
+                       "owner", "telegram", text)
+
+
+def config(key):
+    for line in open(os.path.join(HERE, "config.env")):
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1].strip().strip('"\'')
+
+
+def notify_log():
+    path = config("NOTIFY_LOG")
+    return os.path.expanduser(path) if path else None
+
+
+def from_notify_log(path):
+    import hashlib
+    for line in open(path, errors="replace"):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        key = hashlib.sha1(f"{r['ts']}|{r.get('source')}|{r.get('text')}".encode()).hexdigest()
+        yield ("n:" + key[:20], utc(from_iso(r["ts"])), "script",
+               r.get("source", ""), r.get("text", ""))
+
+
+def sync(db):
+    n = 0
+    if os.path.exists(OLD_ARCHIVE):  # one-time migration from the jsonl archive
+        rows = [json.loads(l) for l in open(OLD_ARCHIVE)]
+        n += add(db, [(r["id"], utc(from_iso(r["ts"])), r["who"], "telegram", r["text"])
+                      for r in rows])
+        os.rename(OLD_ARCHIVE, OLD_ARCHIVE + ".migrated")
+    for path in glob.glob(TRANSCRIPTS):
+        n += add(db, list(from_transcript(path)))
+    path = notify_log()
+    if path and os.path.exists(path):
+        n += add(db, list(from_notify_log(path)))
+    return n
+
+
+def import_export(db, path):
+    """Telegram Desktop export (JSON). Owner = first id in TELEGRAM_ALLOW_IDS; anyone else is the bot."""
+    owner_id = (config("TELEGRAM_ALLOW_IDS") or "").split()[0]
+    data = json.load(open(path))
+    rows = []
+    for m in data.get("messages", []):
+        if m.get("type") != "message":
+            continue
+        text = m.get("text", "")
+        if isinstance(text, list):
+            text = "".join(t if isinstance(t, str) else t.get("text", "") for t in text)
+        if m.get("media_type"):
+            text = f"[{m['media_type']}] {text}".strip()
+        if not text:
+            continue
+        owner = m.get("from_id") == "user" + owner_id
+        if "date_unixtime" in m:
+            ts = datetime.fromtimestamp(int(m["date_unixtime"]), timezone.utc)
+        else:
+            ts = from_iso(m["date"])
+        rows.append(("x:" + str(m["id"]), utc(ts), "owner" if owner else "bot",
+                     "telegram-export", text))
+    return len(rows), add(db, rows)
+
+
+def fts_query(words):
+    # quote each word so punctuation can't break FTS syntax; keep trailing * as prefix
+    out = []
+    for w in words:
+        star = w.endswith("*")
+        w = w.rstrip("*").replace('"', '""')
+        if w:
+            out.append(f'"{w}"' + ("*" if star else ""))
+    return " ".join(out)
+
+
+def bound(s, end=False):
+    d = from_iso(s)
+    if end and len(s) <= 10:
+        d += timedelta(days=1)
+    return utc(d)
+
+
+def show(r, mark=" "):
+    when = from_iso(r[1]).astimezone().strftime("%Y-%m-%d %H:%M")
+    who = r[2] if r[2] != "script" else f"script:{r[3]}"
+    print(f"{mark}{when} {who}: {r[4]}")
+
+
+def main():
+    ap = argparse.ArgumentParser(usage=__doc__)
+    ap.add_argument("text", nargs="*")
+    ap.add_argument("--since")
+    ap.add_argument("--until")
+    ap.add_argument("--who", choices=["owner", "agent", "script", "bot"])
+    ap.add_argument("-n", type=int, default=20)
+    ap.add_argument("-C", type=int, default=0)
+    ap.add_argument("--sync", action="store_true")
+    ap.add_argument("--import", dest="import_file")
+    ap.add_argument("--stats", action="store_true")
+    a = ap.parse_args()
+
+    db = connect()
+    added = sync(db)
+    if a.sync:
+        return
+    if a.import_file:
+        seen, new = import_export(db, a.import_file)
+        print(f"export: {seen} messages read, {new} new")
+        return
+    if a.stats:
+        for row in db.execute("SELECT substr(ts,1,7), who, count(*) FROM messages "
+                              "GROUP BY 1, 2 ORDER BY 1, 2"):
+            print(*row)
+        return
+
+    where, args = [], []
+    if a.text:
+        where.append("rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)")
+        args.append(fts_query(a.text))
+    if a.since:
+        where.append("ts >= ?")
+        args.append(bound(a.since))
+    if a.until:
+        where.append("ts < ?")
+        args.append(bound(a.until, end=True))
+    if a.who:
+        where.append("who = ?")
+        args.append(a.who)
+    sql = ("SELECT rowid, ts, who, source, text FROM messages"
+           + (" WHERE " + " AND ".join(where) if where else "")
+           + " ORDER BY ts DESC LIMIT ?")
+    hits = list(reversed(db.execute(sql, args + [a.n]).fetchall()))
+
+    if not hits:
+        total = db.execute("SELECT count(*) FROM messages").fetchone()[0]
+        print(f"no matches ({total} messages stored)")
+        return
+    if not a.C:
+        for r in hits:
+            show(r)
+        return
+    printed = set()
+    for h in hits:
+        before = db.execute("SELECT rowid, ts, who, source, text FROM messages WHERE ts < ? "
+                            "ORDER BY ts DESC LIMIT ?", (h[1], a.C)).fetchall()[::-1]
+        after = db.execute("SELECT rowid, ts, who, source, text FROM messages WHERE ts > ? "
+                           "ORDER BY ts LIMIT ?", (h[1], a.C)).fetchall()
+        if printed:
+            print("  ...")
+        for r in before + [h] + after:
+            if r[0] not in printed:
+                show(r, "*" if r[0] == h[0] else " ")
+                printed.add(r[0])
+
+
+if __name__ == "__main__":
+    main()

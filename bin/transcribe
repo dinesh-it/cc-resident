@@ -1,0 +1,29 @@
+#!/home/dinesh/agent/local/stt-venv/bin/python
+"""Transcribe a voice note (any format ffmpeg reads) to text on stdout.
+
+Usage: bin/transcribe <audio-file> [model]   (model default: small)
+"""
+import subprocess
+import sys
+
+import numpy as np
+from faster_whisper import WhisperModel
+
+if len(sys.argv) < 2:
+    sys.exit(__doc__)
+
+# Decode with system ffmpeg: the PyAV pip pulls in is incompatible with faster-whisper 1.2.1.
+pcm = subprocess.run(
+    ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", sys.argv[1],
+     "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+    capture_output=True, check=True).stdout
+audio = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
+
+model = WhisperModel(sys.argv[2] if len(sys.argv) > 2 else "small",
+                     device="cpu", compute_type="int8")
+segments, info = model.transcribe(audio, vad_filter=True)
+# Short clips often get misdetected (e.g. English as Tamil); fall back to English.
+if info.language != "en" and info.language_probability < 0.7:
+    segments, info = model.transcribe(audio, vad_filter=True, language="en")
+print(" ".join(s.text.strip() for s in segments))
+print(f"[lang={info.language} p={info.language_probability:.2f}]", file=sys.stderr)
