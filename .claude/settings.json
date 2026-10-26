@@ -3,6 +3,7 @@
     "defaultMode": "default",
     "allow": [
       "Read(/var/log/**)",
+      "Read(~/.config/cc-resident/telegram/inbox/**)",
       "Bash(\"$CLAUDE_PROJECT_DIR\"/bin/status.sh)",
       "Bash(bin/status.sh)",
       "Bash(./bin/status.sh)",
@@ -42,7 +43,8 @@
       "Bash(rm -rf *)",
       "Bash(sudo *)",
       "Bash(systemctl disable *)",
-      "Read(~/.config/cc-resident/**)",
+      "Read(~/.config/cc-resident/telegram/.env)",
+      "Read(~/.config/cc-resident/telegram/access.json)",
       "Read(~/.claude/.credentials.json)"
     ]
   },
